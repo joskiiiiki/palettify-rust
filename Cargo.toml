@@ -1,36 +1,12 @@
 [package]
 name = "palettify"
 version = "0.1.0"
-authors = ["jo <johannes.till.schmidt+palettify@outlook.de>"]
-publish = false
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-clap = { version = "4.5.26", features = ["derive"] }
-image = "0.25.5"
-ndarray = { version = "0.16.1", features = ["rayon"]}
-rayon = "1.10.0"
-regex = "1.11.1"
-termion = "4.0.3"
-video-rs = { version = "0.10.3", features = ["ndarray"] }
-
-[profile.release]
-opt-level = 3
-debug = false
-split-debuginfo = '...'  # Platform-specific.
-strip = "none"
-debug-assertions = false
-overflow-checks = false
-lto = false
-panic = 'unwind'
-incremental = false
-codegen-units = 16
-rpath = false
-
-[profile.release-lto]
-inherits = "release"
-lto = true
-
-[[bin]]
-name = "palettify"
-path = "src/bin/palettify.rs"
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+fast_image_resize = { version = "6.0.0", features = ["image"] }
+image = "0.25.10"
+rayon = "1.11.0"
+turbojpeg = { version = "1.4.0", features = ["image"] }

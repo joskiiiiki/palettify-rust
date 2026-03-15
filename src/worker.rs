@@ -1,161 +1,102 @@
-use crate::{
-    image_processing,
-    palette::{self, read_palette},
-    resolution::Resolutions,
-    video::process_video,
-};
+use anyhow::{Context, bail};
+use rayon::prelude::*;
+
+use crate::palette::LUT;
+use crate::{image_processing, resolution::Resolutions};
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    thread,
 };
 
 pub struct ProcessTask {
     pub input_path: PathBuf,
     pub output_path: PathBuf,
-    pub exponent: i32,
     pub res: Resolutions,
 }
 
 pub fn single_file(
-    palette_path: &Path,
     input_path: &Path,
     output_path: &Path,
-    exponent: i32,
     res: Resolutions,
-) {
+    lut: &LUT<u8>,
+) -> anyhow::Result<()> {
     if !input_path.is_file() {
-        eprintln!("Error: Input file {:?} is not a file.", input_path);
-        return;
+        bail!("Error: Input file {:?} is not a file.", input_path);
     }
 
     if let Some(parent_dir) = output_path.parent() {
         if !parent_dir.exists() {
-            if let Err(e) = fs::create_dir_all(parent_dir) {
-                eprintln!("Error creating directories for output path: {}", e);
-                return;
-            }
+            fs::create_dir_all(parent_dir)
+                .with_context(|| format!("Failed to create directory {}", parent_dir.display()))?;
         }
     }
 
-    let palette = palette::read_palette(palette_path);
-    image_processing::process_image(&palette, input_path, output_path, exponent, res);
-}
-
-pub fn single_video_file(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
-    palette_path: &PathBuf,
-    exponent: i32,
-) {
-    if !input_path.is_file() {
-        eprintln!("Error: Input file {:?} is not a file.", input_path);
-        return;
-    }
-
-    let palette = read_palette(palette_path);
-
-    match process_video(input_path, output_path, &palette, exponent) {
-        Ok(_) => println!("Processed video"),
-        Err(e) => eprintln!("Error processing video: {}", e),
-    }
+    image_processing::process_image(lut, input_path, output_path, res)
+        .with_context(|| "Failed to process image")
 }
 
 pub fn multi_file(
-    palette_path: &Path,
     input_path: &Path,
     output_path: &Path,
-    exponent: i32,
+    lut: LUT<u8>,
     res: Resolutions,
-) {
-    if !input_path.is_dir() {
-        eprintln!("Error: Input file {:?} is not a directory.", input_path);
-        return;
-    }
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        input_path.is_dir(),
+        "Input {} does not exist or is not a directory",
+        input_path.display()
+    );
+    anyhow::ensure!(
+        input_path.is_dir(),
+        "Output {} does not exist or is not a directory",
+        input_path.display()
+    );
 
-    if !output_path.exists() {
-        if let Err(e) = fs::create_dir_all(output_path) {
-            eprintln!("Error creating directories for output path: {}", e);
-            return;
-        }
-    }
+    let mut queue = Vec::<ProcessTask>::new();
 
-    if !output_path.is_dir() {
-        eprintln!("Error: Output path {:?} is not a directory.", output_path);
-        return;
-    }
-
-    let palette = palette::read_palette(palette_path);
-    let mut queue: Vec<ProcessTask> = vec![];
-
-    for entry in fs::read_dir(input_path).unwrap() {
-        match entry {
-            Ok(entry) => {
-                if entry.path().is_file() {
-                    let input_file = entry.path();
-                    let mut output_file = output_path.join(entry.file_name());
-
-                    if let Some(file_name) = output_file.file_name() {
-                        let new_file_name =
-                            format!("palettify-{}.png", file_name.to_string_lossy());
-                        output_file.set_file_name(new_file_name);
-                    }
-
-                    println!("Added {} to queue", input_file.display());
-                    queue.push(ProcessTask {
-                        input_path: input_file.clone(),
-                        output_path: output_file.clone(),
-                        exponent,
-                        res,
-                    });
-                }
-            }
-            Err(e) => eprintln!("Error reading directory entry: {}", e),
-        }
-    }
-
-    batch_process(queue, palette);
-}
-
-fn worker(queue: Arc<Mutex<Vec<ProcessTask>>>, palette: &Arc<Vec<[u8; 3]>>) {
-    loop {
-        let task = {
-            let mut queue = queue.lock().unwrap();
-            queue.pop()
+    for entry in fs::read_dir(input_path)? {
+        let Ok(entry) = entry else {
+            continue;
         };
 
-        if let Some(task) = task {
-            println!("Processing {}...", task.input_path.display());
-            image_processing::process_image(
-                palette,
-                &task.input_path,
-                &task.output_path,
-                task.exponent,
-                task.res,
-            );
-        } else {
-            break;
+        let input_file = entry.path();
+        if !input_file.is_file() {
+            continue;
         }
+
+        let mut output_file = output_path.join(entry.file_name());
+
+        if let Some(file_name) = output_file.file_name() {
+            let new_file_name = format!("palettify-{}", file_name.to_string_lossy());
+            output_file.set_file_name(new_file_name);
+        }
+
+        println!("Added {} to queue", input_file.display());
+        queue.push(ProcessTask {
+            input_path: input_file.clone(),
+            output_path: output_file.clone(),
+            res,
+        });
     }
+
+    batch_process(queue, lut);
+    Ok(())
 }
 
-fn batch_process(queue: Vec<ProcessTask>, palette: Vec<[u8; 3]>) {
-    let thread_count = thread::available_parallelism().unwrap().get();
-    let mut active_threads = Vec::new();
-    let q = Arc::new(Mutex::new(queue));
-    let p = Arc::new(palette);
+fn batch_process(queue: Vec<ProcessTask>, lut: LUT<u8>) {
+    let lut = &lut; // plain shared ref, LUT<u8> is Sync
+    let errors: Vec<_> = queue
+        .par_iter()
+        .filter_map(|task| {
+            println!("Processing {}...", task.input_path.display());
+            image_processing::process_image(lut, &task.input_path, &task.output_path, task.res)
+                .err()
+                .map(|e| format!("Failed to process {}: {e}", task.input_path.display()))
+        })
+        .collect();
 
-    for _ in 0..thread_count {
-        let queue_clone = Arc::clone(&q);
-        let palette_clone = Arc::clone(&p);
-        let handle = thread::spawn(move || {
-            worker(queue_clone, &palette_clone);
-        });
-        active_threads.push(handle);
-    }
-
-    for handle in active_threads {
-        handle.join().unwrap();
+    for e in errors {
+        eprintln!("{e}");
     }
 }

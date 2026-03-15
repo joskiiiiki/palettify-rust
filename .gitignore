@@ -24,3 +24,7 @@ target/
 /out
 /*.mp4
 /*.png
+
+# Added by cargo
+
+/target
