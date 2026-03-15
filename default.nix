@@ -1,12 +1,15 @@
-{ lib
-, stdenv
-, rustPlatform
-, glib
-, llvmPackages
-, pkg-config
-, ffmpeg
-, rustc
-, cargo
+{
+  lib,
+  rustPlatform,
+  glib,
+  llvmPackages,
+  pkg-config,
+  rustc,
+
+  nasm,
+  cmake,
+  clang,
+  cargo,
 }:
 rustPlatform.buildRustPackage rec {
   pname = "palettify-rust";
@@ -16,12 +19,14 @@ rustPlatform.buildRustPackage rec {
 
   buildInputs = [
     glib
-    ffmpeg
+    clang
     rustPlatform.bindgenHook
   ];
 
   nativeBuildInputs = [
     rustPlatform.bindgenHook
+    cmake
+    nasm
     pkg-config
     rustc
     cargo
@@ -32,10 +37,10 @@ rustPlatform.buildRustPackage rec {
   cargoHash = lib.fakeHash;
 
   cargoBuildOptions = [
-        "--release-lto"
+    "--release"
   ];
 
-  LIBCLANG_PATH="${llvmPackages.libclang.lib}";
+  LIBCLANG_PATH = "${llvmPackages.libclang.lib}";
 
   meta = with lib; {
     homepage = "";

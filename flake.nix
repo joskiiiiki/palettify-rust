@@ -40,13 +40,11 @@
             nasm
             cmake
             clang
-            ffmpeg
             rustPlatform.bindgenHook
             llvmPackages.libclang
           ];
           env = {
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}";
-            BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.ffmpeg.dev}/include";
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           };
         };
