@@ -89,7 +89,7 @@ fn img_resize(image: &Image, res: Resolutions) -> Option<Image> {
 pub fn process(lut: &LUT<u8>, img: &mut Image) {
     img.par_pixels_mut().for_each(|pixel| {
         let [r, g, b, _] = &mut pixel.0;
-        let [nr, ng, nb] = lut.lookup(*r, *g, *b);
+        let [nr, ng, nb] = lut.lookup_tril(*r, *g, *b);
         *r = nr;
         *g = ng;
         *b = nb;

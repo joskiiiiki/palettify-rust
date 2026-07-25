@@ -3,16 +3,30 @@ use rayon::prelude::*;
 
 use crate::palette::LUT;
 use crate::{image_processing, resolution::Resolutions};
+use std::time::Instant;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
 pub struct ProcessTask {
     pub input_path: PathBuf,
     pub output_path: PathBuf,
     pub res: Resolutions,
+}
+
+fn output_path_with_prefix(input_file: &Path, output_dir: &Path, prefix: &str) -> PathBuf {
+    let stem = input_file.file_stem().unwrap_or_default();
+    let ext = input_file.extension();
+
+    let mut new_name = std::ffi::OsString::from(prefix);
+    new_name.push(stem);
+    if let Some(ext) = ext {
+        new_name.push(".");
+        new_name.push(ext);
+    }
+
+    output_dir.join(new_name)
 }
 
 pub fn single_file(
@@ -24,6 +38,11 @@ pub fn single_file(
     if !input_path.is_file() {
         bail!("Error: Input file {:?} is not a file.", input_path);
     }
+    let output_path = if output_path.is_dir() {
+        output_path_with_prefix(input_path, output_path, "palettify-")
+    } else {
+        output_path.to_path_buf()
+    };
 
     if let Some(parent_dir) = output_path.parent() {
         if !parent_dir.exists() {
@@ -32,7 +51,7 @@ pub fn single_file(
         }
     }
 
-    image_processing::process_image(lut, input_path, output_path, res)
+    image_processing::process_image(lut, input_path, &output_path, res)
         .with_context(|| "Failed to process image")
 }
 
@@ -65,14 +84,8 @@ pub fn multi_file(
             continue;
         }
 
-        let mut output_file = output_path.join(entry.file_name());
-
-        if let Some(file_name) = output_file.file_name() {
-            let new_file_name = format!("palettify-{}", file_name.to_string_lossy());
-            output_file.set_file_name(new_file_name);
-        }
-
-        println!("Added {} to queue", input_file.display());
+        let output_file = output_path_with_prefix(&input_file, output_path, "palettify-");
+        println!("Added {} to queue", output_file.display());
         queue.push(ProcessTask {
             input_path: input_file.clone(),
             output_path: output_file.clone(),

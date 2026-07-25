@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use crate::interpolation::Interpolation;
+
 pub struct Palette(pub Vec<[u8; 3]>);
 
 impl Palette {
@@ -9,8 +11,15 @@ impl Palette {
         let palette = content
             .lines()
             .filter_map(|hex_code| parse_hex_str(hex_code))
-            .collect();
+            .collect::<Vec<[u8; 3]>>();
+
         Ok(Self(palette))
+    }
+    pub fn to_f32(self) -> Vec<[f32; 3]> {
+        self.0
+            .iter()
+            .map(|&[r, g, b]| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
+            .collect()
     }
 }
 
@@ -25,7 +34,7 @@ fn parse_hex_str(s: &str) -> Option<[u8; 3]> {
     Some([r, g, b])
 }
 
-const LUT_SIZE: usize = 256;
+const LUT_SIZE: usize = 64;
 
 #[derive(Clone)]
 pub struct LUT<T>(Box<[T; 3 * LUT_SIZE * LUT_SIZE * LUT_SIZE]>);
@@ -72,38 +81,6 @@ where
     }
 }
 
-pub fn interpolate(color: [f32; 3], palette: &[[f32; 3]], exponent: f32) -> [f32; 3] {
-    match palette.len() {
-        0 => return [0.0; 3],
-        1 => return palette[0],
-        _ => {}
-    }
-
-    let mut weighted_sum = [0.0f32; 3];
-    let mut weight_total = 0.0f32;
-
-    for &pcolor in palette {
-        let dist_sq: f32 = color
-            .iter()
-            .zip(pcolor)
-            .map(|(&a, b)| (a - b).powi(2))
-            .sum();
-
-        if dist_sq < f32::EPSILON {
-            return pcolor;
-        }
-
-        let weight = dist_sq.powf(-exponent / 2.0);
-        weight_total += weight;
-        for i in 0..3 {
-            weighted_sum[i] += weight * pcolor[i];
-        }
-    }
-
-    let inv = 1.0 / weight_total;
-    weighted_sum.map(|v| v * inv)
-}
-
 impl LUT<u8> {
     pub fn lookup(&self, r: u8, g: u8, b: u8) -> [u8; 3] {
         let scale = (Self::SIZE - 1) as f32 / 255.0;
@@ -113,13 +90,7 @@ impl LUT<u8> {
         unsafe { self.lookup_cell_unchecked(ri, gi, bi) }
     }
 
-    pub fn from_palette(palette: Palette) -> Self {
-        let palette_f32: Vec<[f32; 3]> = palette
-            .0
-            .iter()
-            .map(|&[r, g, b]| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
-            .collect();
-
+    pub fn from_interpolation<T: Interpolation + ?Sized>(interpolation: &T) -> Self {
         let mut lut = Self(
             vec![0u8; 3 * LUT_SIZE * LUT_SIZE * LUT_SIZE]
                 .into_boxed_slice()
@@ -132,7 +103,7 @@ impl LUT<u8> {
             for g in 0..Self::SIZE {
                 for b in 0..Self::SIZE {
                     let color = [r as f32 * scale, g as f32 * scale, b as f32 * scale];
-                    let result = interpolate(color, &palette_f32, 2.0);
+                    let result = interpolation.interpolate(color);
                     unsafe {
                         lut.set_cell_unchecked(
                             r,
@@ -148,10 +119,47 @@ impl LUT<u8> {
         }
         lut
     }
-}
 
-impl From<Palette> for LUT<u8> {
-    fn from(palette: Palette) -> Self {
-        Self::from_palette(palette)
+    pub fn lookup_tril(&self, r: u8, g: u8, b: u8) -> [u8; 3] {
+        let scale = (Self::SIZE - 1) as f32 / 255.0;
+        let rf = r as f32 * scale;
+        let gf = g as f32 * scale;
+        let bf = b as f32 * scale;
+
+        let r0 = rf.floor() as usize;
+        let g0 = gf.floor() as usize;
+        let b0 = bf.floor() as usize;
+        let r1 = (r0 + 1).min(Self::SIZE - 1);
+        let g1 = (g0 + 1).min(Self::SIZE - 1);
+        let b1 = (b0 + 1).min(Self::SIZE - 1);
+
+        let rd = rf - r0 as f32;
+        let gd = gf - g0 as f32;
+        let bd = bf - b0 as f32;
+
+        unsafe {
+            let c000 = self.lookup_cell_unchecked(r0, g0, b0);
+            let c100 = self.lookup_cell_unchecked(r1, g0, b0);
+            let c010 = self.lookup_cell_unchecked(r0, g1, b0);
+            let c110 = self.lookup_cell_unchecked(r1, g1, b0);
+            let c001 = self.lookup_cell_unchecked(r0, g0, b1);
+            let c101 = self.lookup_cell_unchecked(r1, g0, b1);
+            let c011 = self.lookup_cell_unchecked(r0, g1, b1);
+            let c111 = self.lookup_cell_unchecked(r1, g1, b1);
+
+            let mut out = [0u8; 3];
+            for i in 0..3 {
+                let c00 = c000[i] as f32 * (1.0 - rd) + c100[i] as f32 * rd;
+                let c10 = c010[i] as f32 * (1.0 - rd) + c110[i] as f32 * rd;
+                let c01 = c001[i] as f32 * (1.0 - rd) + c101[i] as f32 * rd;
+                let c11 = c011[i] as f32 * (1.0 - rd) + c111[i] as f32 * rd;
+
+                let c0 = c00 * (1.0 - gd) + c10 * gd;
+                let c1 = c01 * (1.0 - gd) + c11 * gd;
+
+                out[i] = (c0 * (1.0 - bd) + c1 * bd).round() as u8;
+            }
+            out
+        }
     }
 }
